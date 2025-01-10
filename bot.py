@@ -13,7 +13,7 @@ from coindcx_client import CoinDCXClient
 from models import db, Config, BotStatus
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
-from models import db, ConfigModel, BotStatus
+from models import db, BotStatus
 
 # Load environment variables
 load_dotenv()

@@ -5,7 +5,7 @@ from flask_migrate import Migrate
 from datetime import datetime, time
 import os
 import logging
-from models import db, ConfigModel, BotStatus
+from models import db, BotStatus
 
 # Initialize Flask app
 app = Flask(__name__)
