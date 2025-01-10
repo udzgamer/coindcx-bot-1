@@ -1,47 +1,59 @@
 # app.py
-import os
 from flask import Flask, render_template, request, redirect, url_for, flash
 from flask_sqlalchemy import SQLAlchemy
 from flask_migrate import Migrate
-from models import db, Config, BotStatus
-from datetime import datetime
-from dotenv import load_dotenv
-from coindcx_client import CoinDCXClient
+from datetime import datetime, time
+import os
 import logging
+from models import db, ConfigModel, BotStatus
 
-# Load environment variables from .env (for local development)
-load_dotenv()
-
+# Initialize Flask app
 app = Flask(__name__)
 
-# Set the secret key from environment variable
-app.secret_key = os.getenv('SECRET_KEY')
+# Configure Flask app
+app.secret_key = os.getenv('SECRET_KEY', 'your_default_secret_key')  # Use a strong secret key in production
 
-# Database configuration
-app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv('DATABASE_URL')
+# Handle 'postgres://' prefix by replacing it with 'postgresql://'
+DATABASE_URL = os.getenv('DATABASE_URL', 'sqlite:///local.db')
+if DATABASE_URL.startswith('postgres://'):
+    DATABASE_URL = DATABASE_URL.replace('postgres://', 'postgresql://', 1)
+
+app.config['SQLALCHEMY_DATABASE_URI'] = DATABASE_URL
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
-db.init_app(app)
+# Initialize database and migration
+db = SQLAlchemy(app)
 migrate = Migrate(app, db)
 
-# Initialize CoinDCX Client
-COINDCX_API_KEY = os.getenv('COINDCX_API_KEY')
-COINDCX_API_SECRET = os.getenv('COINDCX_API_SECRET')
-coindcx_client = CoinDCXClient(COINDCX_API_KEY, COINDCX_API_SECRET)
-
-# Configure logging
+# Logging configuration
 logging.basicConfig(
     filename='app.log',
-    level=logging.ERROR,
-    format='%(asctime)s %(levelname)s %(message)s',
+    level=logging.INFO,
+    format='%(asctime)s %(levelname)s: %(message)s',
 )
+
+# Define Models
+class ConfigModel(db.Model):
+    __tablename__ = 'config'
+    id = db.Column(db.Integer, primary_key=True)
+    symbol = db.Column(db.String(20), nullable=False, default='BTCINR')
+    session_start = db.Column(db.Time, nullable=False, default=time(8, 0, 0))
+    session_end = db.Column(db.Time, nullable=False, default=time(5, 0, 0))
+    sl_amount = db.Column(db.Float, nullable=False, default=25.0)
+    tsl_step = db.Column(db.Float, nullable=False, default=10.0)
+    trade_quantity = db.Column(db.Float, nullable=False, default=1000.0)
+
+class BotStatus(db.Model):
+    __tablename__ = 'bot_status'
+    id = db.Column(db.Integer, primary_key=True)
+    running = db.Column(db.Boolean, nullable=False, default=False)
 
 # Initialize the database and create tables if they don't exist
 with app.app_context():
     db.create_all()
     # Initialize Config and BotStatus if not present
-    if Config.query.first() is None:
-        config = Config()
+    if ConfigModel.query.first() is None:
+        config = ConfigModel()
         db.session.add(config)
         db.session.commit()
     if BotStatus.query.first() is None:
@@ -49,10 +61,20 @@ with app.app_context():
         db.session.add(status)
         db.session.commit()
 
+# Initialize CoinDCX Client
+from coindcx_client import CoinDCXClient
+COINDCX_API_KEY = os.getenv('COINDCX_API_KEY')
+COINDCX_API_SECRET = os.getenv('COINDCX_API_SECRET')
+if not COINDCX_API_KEY or not COINDCX_API_SECRET:
+    logging.error("CoinDCX API credentials are missing.")
+    raise Exception("CoinDCX API credentials are not set.")
 
+coindcx_client = CoinDCXClient(COINDCX_API_KEY, COINDCX_API_SECRET)
+
+# Define Routes
 @app.route('/', methods=['GET', 'POST'])
 def index():
-    config = Config.query.first()
+    config = ConfigModel.query.first()
     status = BotStatus.query.first()
     symbols = []
 
@@ -66,12 +88,13 @@ def index():
 
     if request.method == 'POST':
         # Update Config
-        selected_symbol = request.form['symbol'].upper()
-        config.symbol = selected_symbol
+        selected_symbol = request.form.get('symbol', '').upper()
+        if selected_symbol:
+            config.symbol = selected_symbol
 
         try:
-            session_start = datetime.strptime(request.form['session_start'], '%H:%M').time()
-            session_end = datetime.strptime(request.form['session_end'], '%H:%M').time()
+            session_start = datetime.strptime(request.form.get('session_start'), '%H:%M').time()
+            session_end = datetime.strptime(request.form.get('session_end'), '%H:%M').time()
             config.session_start = session_start
             config.session_end = session_end
         except ValueError:
@@ -79,9 +102,9 @@ def index():
             return redirect(url_for('index'))
 
         try:
-            config.sl_amount = float(request.form['sl_amount'])
-            config.tsl_step = float(request.form['tsl_step'])
-            config.trade_quantity = float(request.form['trade_quantity'])
+            config.sl_amount = float(request.form.get('sl_amount', 25.0))
+            config.tsl_step = float(request.form.get('tsl_step', 10.0))
+            config.trade_quantity = float(request.form.get('trade_quantity', 1000.0))
         except ValueError:
             flash('SL, TSL steps, and Trade Quantity must be numeric.', 'danger')
             return redirect(url_for('index'))
@@ -91,7 +114,6 @@ def index():
         return redirect(url_for('index'))
 
     return render_template('index.html', config=config, status=status, symbols=symbols)
-
 
 @app.route('/start', methods=['POST'])
 def start_bot():
@@ -104,7 +126,6 @@ def start_bot():
         flash('Bot is already running.', 'warning')
     return redirect(url_for('index'))
 
-
 @app.route('/stop', methods=['POST'])
 def stop_bot():
     status = BotStatus.query.first()
@@ -116,6 +137,6 @@ def stop_bot():
         flash('Bot is not running.', 'warning')
     return redirect(url_for('index'))
 
-
-if __name__ == '__main__':
-    app.run(debug=True)
+if __name__ == "__main__":
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port)
